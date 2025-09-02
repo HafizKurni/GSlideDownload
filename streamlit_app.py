@@ -1,139 +1,106 @@
 import os
-import time
+import io
+import shutil
 import zipfile
+import requests
 import streamlit as st
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+from pdf2image import convert_from_bytes
 
-# --- Streamlit Page Configuration ---
+# --- Konfigurasi Halaman Streamlit ---
 st.set_page_config(
-    page_title="Google Slides Downloader",
+    page_title="Pengunduh Google Slides",
     page_icon="📄",
     layout="centered"
 )
 
-# --- Main App UI ---
-st.title("📄 Google Slides Downloader")
-st.write("Paste the 'embed' URL of a public Google Slides presentation to download all slides as a ZIP file containing PNG images.")
+# --- UI Aplikasi Utama ---
+st.title("📄 Pengunduh Google Slides")
+st.write("Tempelkan URL 'embed' dari presentasi Google Slides publik untuk mengunduh semua slide sebagai file ZIP berisi gambar PNG.")
 
-# --- Configuration ---
-# Default URL for the input box
+# --- Konfigurasi ---
 DEFAULT_URL = "https://docs.google.com/presentation/d/e/2PACX-1vRoiaaNbJnyMe-Z19h9h2wy24yJsX_rFhHn6_svn5VMKMDcl4yMsjMF3qoNUOO_Yg/embed?start=false&loop=false&delayms=3000&slide=id.p1"
 OUTPUT_FOLDER = "temp_slides"
 ZIP_FILENAME = "downloaded_slides.zip"
 
-# --- Selenium Functions ---
+def convert_url_to_pdf_export(url):
+    """Mengubah URL Google Slides dari format /embed menjadi /export/pdf."""
+    try:
+        # Menemukan bagian dasar dari URL
+        base_url = url.split('/embed')[0]
+        return f"{base_url}/export/pdf"
+    except Exception:
+        return None
 
-@st.cache_resource
-def setup_driver():
-    """Sets up the Chrome WebDriver for Streamlit Cloud."""
-    # These options are crucial for running Chrome in a headless
-    # (no GUI) environment like the one Streamlit Cloud uses.
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
-    # This prevents unnecessary log messages from cluttering the console
-    options.add_argument("--log-level=3") 
-    
-    # webdriver-manager automatically downloads and manages the driver
-    service = ChromeService(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=options)
-
-def download_slides(driver, url):
-    """Navigates to the URL and downloads each slide as a PNG image."""
-    
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
+def download_and_convert(url):
+    """Mengunduh file PDF dan mengubahnya menjadi gambar."""
+    pdf_url = convert_url_to_pdf_export(url)
+    if not pdf_url:
+        st.error("URL yang Anda masukkan tidak valid. Pastikan ini adalah tautan 'embed' Google Slides.")
+        return False
 
     status_placeholder = st.empty()
-    progress_bar = st.progress(0)
-    
-    status_placeholder.info("Navigating to Google Slides URL...")
-    driver.get(url)
-    
-    wait = WebDriverWait(driver, 20)
+    progress_bar = st.progress(0, text="Mempersiapkan unduhan...")
 
     try:
-        paginator_selector = (By.CSS_SELECTOR, ".punch-viewer-nav-details > div")
-        next_button_selector = (By.CSS_SELECTOR, "[aria-label='Next']")
-        slide_container_selector = (By.ID, "punch-viewer-content-container")
+        # Hapus folder output lama jika ada
+        if os.path.exists(OUTPUT_FOLDER):
+            shutil.rmtree(OUTPUT_FOLDER)
+        os.makedirs(OUTPUT_FOLDER)
+
+        # 1. Unduh PDF
+        status_placeholder.info(f"Mengunduh file PDF dari Google...")
+        response = requests.get(pdf_url, stream=True)
+        response.raise_for_status()  # Cek jika ada error HTTP
+        pdf_bytes = response.content
         
-        status_placeholder.info("Waiting for presentation elements to load...")
-        paginator = wait.until(EC.presence_of_element_located(paginator_selector))
-        next_button = wait.until(EC.element_to_be_clickable(next_button_selector))
-        slide_container = wait.until(EC.presence_of_element_located(slide_container_selector))
+        # 2. Konversi PDF menjadi gambar
+        status_placeholder.info("Mengonversi PDF menjadi gambar... Ini mungkin memakan waktu beberapa saat.")
+        images = convert_from_bytes(pdf_bytes, fmt='png')
         
-        total_slides_text = paginator.text
-        total_slides = int(total_slides_text.split('/')[-1].strip())
-        status_placeholder.info(f"Found {total_slides} slides to download.")
-        
-        for i in range(1, total_slides + 1):
-            progress_bar.progress(i / total_slides)
-            status_placeholder.info(f"Downloading slide {i} of {total_slides}...")
-            
-            time.sleep(0.5)
-            
-            file_path = os.path.join(OUTPUT_FOLDER, f"slide_{str(i).zfill(3)}.png")
-            slide_container.screenshot(file_path)
-            
-            if i < total_slides:
-                next_button.click()
-        
-        progress_bar.progress(1.0)
-        status_placeholder.success("All slides downloaded successfully! Now creating ZIP file...")
+        total_slides = len(images)
+        status_placeholder.info(f"Ditemukan {total_slides} slide. Menyimpan gambar...")
+
+        for i, image in enumerate(images):
+            file_path = os.path.join(OUTPUT_FOLDER, f"slide_{str(i + 1).zfill(3)}.png")
+            image.save(file_path, "PNG")
+            progress_bar.progress((i + 1) / total_slides, text=f"Menyimpan gambar {i+1}/{total_slides}")
+
+        status_placeholder.success("Semua slide berhasil diubah menjadi gambar! Sekarang membuat file ZIP...")
         return True
 
+    except requests.exceptions.RequestException as e:
+        st.error(f"Gagal mengunduh PDF. Pastikan presentasi ini bersifat publik. Error: {e}")
+        return False
     except Exception as e:
-        st.error(f"An error occurred: {e}")
-        st.warning("Please check that the URL is a valid 'embed' link and the presentation is public.")
+        st.error(f"Terjadi kesalahan saat konversi: {e}")
         return False
 
 def zip_files():
-    """Zips the downloaded PNG files."""
-    if os.path.exists(ZIP_FILENAME):
-        os.remove(ZIP_FILENAME)
-
+    """Membuat file ZIP dari gambar yang diunduh."""
     with zipfile.ZipFile(ZIP_FILENAME, 'w') as zipf:
         for root, _, files in os.walk(OUTPUT_FOLDER):
-            for file in files:
+            for file in sorted(files):
                 zipf.write(os.path.join(root, file), arcname=file)
 
-def cleanup():
-    """Removes temporary files and folders."""
-    if os.path.exists(ZIP_FILENAME):
-        os.remove(ZIP_FILENAME)
-    if os.path.exists(OUTPUT_FOLDER):
-        for file in os.listdir(OUTPUT_FOLDER):
-            os.remove(os.path.join(OUTPUT_FOLDER, file))
-        os.rmdir(OUTPUT_FOLDER)
+# --- UI dan Logika Streamlit ---
+slides_url = st.text_input("Masukkan URL Embed Google Slides", DEFAULT_URL)
 
-# --- Streamlit UI and Logic ---
-slides_url = st.text_input("Enter Google Slides Embed URL", DEFAULT_URL)
-
-if st.button("Download Slides", type="primary"):
+if st.button("Unduh Slide", type="primary"):
     if slides_url:
-        driver = setup_driver()
-        
-        cleanup()
-        
-        download_success = download_slides(driver, slides_url)
+        download_success = download_and_convert(slides_url)
         
         if download_success:
             zip_files()
             with open(ZIP_FILENAME, "rb") as fp:
                 st.download_button(
-                    label="Download ZIP",
+                    label="Unduh ZIP",
                     data=fp,
                     file_name="slides.zip",
                     mime="application/zip",
-                    on_click=cleanup
                 )
+            # Membersihkan file sementara setelah tombol unduh ditampilkan
+            shutil.rmtree(OUTPUT_FOLDER)
+            os.remove(ZIP_FILENAME)
     else:
-        st.warning("Please enter a URL.")
+        st.warning("Silakan masukkan URL.")
 
