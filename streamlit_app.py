@@ -23,8 +23,11 @@ async def download_slides_with_playwright(url, progress_bar, status_text):
     slide_paths = []
     
     async with async_playwright() as p:
-        # Menjalankan browser Chromium yang sudah diinstal oleh Playwright
-        browser = await p.chromium.launch(headless=True) 
+        # Menjalankan browser dengan argumen tambahan untuk kompatibilitas cloud
+        browser = await p.chromium.launch(
+            headless=True, 
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        ) 
         page = await browser.new_page()
         
         try:
